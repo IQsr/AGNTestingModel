@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>three.js ¡V AGN Accretion Disk (GPGPU)</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: radial-gradient(circle at 30% 30%, #0c0c15 0%, #05050a 40%, #000 100%); color: #eee; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+      #info { position: absolute; top: 0; width: 100%; padding: 12px 16px; box-sizing: border-box; text-align: center; background: linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%); pointer-events: none; }
+      #info a { color: #8bd0ff; text-decoration: none; font-weight: 600; pointer-events: auto; }
+      canvas { display: block; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./node_modules/three/build/three.module.js",
+          "three/addons/": "./node_modules/three/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="info">
+      <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> ¡V AGN accretion disk demo (GPGPU)
+    </div>
+
+    <!-- Fragment shader for position -->
+    <script id="computeShaderPosition" type="x-shader/x-fragment">
+      #define delta ( 1.0 / 60.0 )
+      void main() {
+        vec2 uv = gl_FragCoord.xy / resolution.xy;
+        vec4 tmpPos = texture2D( texturePosition, uv );
+        vec3 pos = tmpPos.xyz;
+        vec4 tmpVel = texture2D( textureVelocity, uv );
+        vec3 vel = tmpVel.xyz;
+        float mass = tmpVel.w;
+        if ( mass == 0.0 ) {
+          vel = vec3( 0.0 );
+        }
+        pos += vel * delta;
+        gl_FragColor = vec4( pos, 1.0 );
+      }
+    </script>
+
+    <!-- Fragment shader for velocity: central black hole potential -->
+    <script id="computeShaderVelocity" type="x-shader/x-fragment">
+      #include <common>
+      #define delta ( 1.0 / 60.0 )
+      uniform float gravityConstant;
+      uniform float density;
+      uniform float softening;
+      uniform float damping;
+      void main() {
+        vec2 uv = gl_FragCoord.xy / resolution.xy;
+        vec4 tmpPos = texture2D( texturePosition, uv );
+        vec3 pos = tmpPos.xyz;
+        vec4 tmpVel = texture2D( textureVelocity, uv );
+        vec3 vel = tmpVel.xyz;
+        float mass = tmpVel.w;
+        if ( mass > 0.0 ) {
+          vec3 r = pos;
+          float r2 = dot( r, r ) + softening;
+          float invR = inversesqrt( r2 );
+          float invR3 = invR * invR * invR;
+          vec3 acc = - gravityConstant * r * invR3;
+          vel += delta * acc;
+          vel *= damping; // mild drag to keep the disk bound
+        }
+        gl_FragColor = vec4( vel, mass );
+      }
+    </script>
+
+    <!-- Particles vertex shader -->
+    <script type="x-shader/x-vertex" id="particleVertexShader">
+      #include <common>
+      uniform sampler2D texturePosition;
+      uniform sampler2D textureVelocity;
+      uniform float cameraConstant;
+      uniform float density;
+      varying vec4 vColor;
+      float radiusFromMass( float mass ) {
+        return pow( ( 3.0 / ( 4.0 * PI ) ) * mass / density, 1.0 / 3.0 );
+      }
+      void main() {
+        vec4 posTemp = texture2D( texturePosition, uv );
+        vec3 pos = posTemp.xyz;
+        vec4 velTemp = texture2D( textureVelocity, uv );
+        vec3 vel = velTemp.xyz;
+        float mass = velTemp.w;
+        float r = length( pos );
+        float t = clamp( r / 400.0, 0.0, 1.0 );
+        vec3 innerColor = vec3( 1.0, 0.95, 0.9 );
+        vec3 outerColor = vec3( 1.0, 0.4, 0.1 );
+        vec3 color = mix( innerColor, outerColor, t );
+        float alpha = mass > 0.0 ? 1.0 : 0.0;
+        vColor = vec4( color, alpha );
+        vec4 mvPosition = modelViewMatrix * vec4( pos, 1.0 );
+        float radius = radiusFromMass( mass );
+        if ( mass == 0.0 ) {
+          gl_PointSize = 0.0;
+        } else {
+          gl_PointSize = radius * cameraConstant / ( - mvPosition.z );
+        }
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    </script>
+
+    <!-- Particles fragment shader -->
+    <script type="x-shader/x-fragment" id="particleFragmentShader">
+      varying vec4 vColor;
+      void main() {
+        if ( vColor.a == 0.0 ) discard;
+        float f = length( gl_PointCoord - vec2( 0.5, 0.5 ) );
+        if ( f > 0.5 ) discard;
+        gl_FragColor = vColor;
+      }
+    </script>
+
+    <script type="module">
+      import * as THREE from 'three';
+      import Stats from 'three/addons/libs/stats.module.js';
+      import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+      import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+
+      const WIDTH = 64;
+      const PARTICLES = WIDTH * WIDTH;
+
+      let container, stats;
+      let camera, scene, renderer, geometry;
+      let gpuCompute;
+      let velocityVariable, positionVariable;
+      let velocityUniforms, particleUniforms;
+      let effectController;
+
+      init();
+
+      function init() {
+        container = document.createElement( 'div' );
+        document.body.appendChild( container );
+
+        camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 5, 15000 );
+        camera.position.y = 200;
+        camera.position.z = 500;
+
+        scene = new THREE.Scene();
+
+        // Central bright core representing the BH/accretion region
+        const bhGeom = new THREE.SphereGeometry( 10, 32, 32 );
+        const bhMat = new THREE.MeshBasicMaterial( { color: 0xffffff } );
+        const blackHole = new THREE.Mesh( bhGeom, bhMat );
+        scene.add( blackHole );
+
+        renderer = new THREE.WebGLRenderer();
+        renderer.setPixelRatio( window.devicePixelRatio );
+        renderer.setSize( window.innerWidth, window.innerHeight );
+        renderer.setAnimationLoop( animate );
+        container.appendChild( renderer.domElement );
+
+        const controls = new OrbitControls( camera, renderer.domElement );
+        controls.minDistance = 100;
+        controls.maxDistance = 1000;
+
+        effectController = {
+          gravityConstant: 2000.0,
+          density: 0.45,
+          softening: 120.0,
+          damping: 0.9985,
+          radius: 300,
+          height: 30,
+          exponent: 0.4,
+          maxMass: 15.0,
+          velocityExponent: 0.3,
+          randVelocity: 0.25
+        };
+
+        initComputeRenderer();
+
+        stats = new Stats();
+        container.appendChild( stats.dom );
+
+        window.addEventListener( 'resize', onWindowResize );
+
+        initGUI();
+        initProtoplanets();
+        dynamicValuesChanger();
+      }
+
+      function initComputeRenderer() {
+        gpuCompute = new GPUComputationRenderer( WIDTH, WIDTH, renderer );
+        const dtPosition = gpuCompute.createTexture();
+        const dtVelocity = gpuCompute.createTexture();
+        fillTextures( dtPosition, dtVelocity );
+        velocityVariable = gpuCompute.addVariable( 'textureVelocity', document.getElementById( 'computeShaderVelocity' ).textContent, dtVelocity );
+        positionVariable = gpuCompute.addVariable( 'texturePosition', document.getElementById( 'computeShaderPosition' ).textContent, dtPosition );
+        gpuCompute.setVariableDependencies( velocityVariable, [ positionVariable, velocityVariable ] );
+        gpuCompute.setVariableDependencies( positionVariable, [ positionVariable, velocityVariable ] );
+        velocityUniforms = velocityVariable.material.uniforms;
+        velocityUniforms[ 'gravityConstant' ] = { value: 0.0 };
+        velocityUniforms[ 'density' ] = { value: 0.0 };
+        velocityUniforms[ 'softening' ] = { value: 0.0 };
+        velocityUniforms[ 'damping' ] = { value: 1.0 };
+        const error = gpuCompute.init();
+        if ( error !== null ) console.error( error );
+      }
+
+      function restartSimulation() {
+        const dtPosition = gpuCompute.createTexture();
+        const dtVelocity = gpuCompute.createTexture();
+        fillTextures( dtPosition, dtVelocity );
+        gpuCompute.renderTexture( dtPosition, positionVariable.renderTargets[ 0 ] );
+        gpuCompute.renderTexture( dtPosition, positionVariable.renderTargets[ 1 ] );
+        gpuCompute.renderTexture( dtVelocity, velocityVariable.renderTargets[ 0 ] );
+        gpuCompute.renderTexture( dtVelocity, velocityVariable.renderTargets[ 1 ] );
+      }
+
+      function initProtoplanets() {
+        geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array( PARTICLES * 3 );
+        let p = 0;
+        for ( let i = 0; i < PARTICLES; i ++ ) {
+          positions[ p ++ ] = 0; positions[ p ++ ] = 0; positions[ p ++ ] = 0;
+        }
+        const uvs = new Float32Array( PARTICLES * 2 );
+        p = 0;
+        for ( let j = 0; j < WIDTH; j ++ ) {
+          for ( let i = 0; i < WIDTH; i ++ ) {
+            uvs[ p ++ ] = i / ( WIDTH - 1 );
+            uvs[ p ++ ] = j / ( WIDTH - 1 );
+          }
+        }
+        geometry.setAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+        geometry.setAttribute( 'uv', new THREE.BufferAttribute( uvs, 2 ) );
+        particleUniforms = {
+          'texturePosition': { value: null },
+          'textureVelocity': { value: null },
+          'cameraConstant': { value: getCameraConstant( camera ) },
+          'density': { value: 0.0 }
+        };
+        const material = new THREE.ShaderMaterial( {
+          uniforms: particleUniforms,
+          vertexShader: document.getElementById( 'particleVertexShader' ).textContent,
+          fragmentShader: document.getElementById( 'particleFragmentShader' ).textContent,
+          transparent: true
+        } );
+        const particles = new THREE.Points( geometry, material );
+        particles.matrixAutoUpdate = false;
+        particles.updateMatrix();
+        scene.add( particles );
+      }
+
+      function fillTextures( texturePosition, textureVelocity ) {
+        const posArray = texturePosition.image.data;
+        const velArray = textureVelocity.image.data;
+        const radius = effectController.radius;
+        const height = effectController.height;
+        const exponent = effectController.exponent;
+        const maxMass = effectController.maxMass * 1024 / PARTICLES;
+        const velExponent = effectController.velocityExponent;
+        const randVel = effectController.randVelocity;
+        const softening = effectController.softening;
+        const GM = effectController.gravityConstant;
+        for ( let k = 0, kl = posArray.length; k < kl; k += 4 ) {
+          let x, z, rr2;
+          do {
+            x = ( Math.random() * 2 - 1 );
+            z = ( Math.random() * 2 - 1 );
+            rr2 = x * x + z * z;
+          } while ( rr2 > 1 );
+          const rr = Math.sqrt( rr2 );
+          const innerRadius = 30;
+          const rExp = innerRadius + radius * Math.pow( rr, exponent );
+
+          // Unit vectors in disk plane
+          const invR = 1.0 / Math.max( Math.sqrt( rr2 ), 1e-4 );
+          const ux = x * invR;
+          const uz = z * invR;
+          const tx =  uz; // tangent unit vector (rotated 90 deg)
+          const tz = -ux;
+
+          // Kepler-like circular speed tied to gravityConstant for self-consistency
+          const vCirc = Math.sqrt( GM / ( rExp + softening ) ) * Math.pow( rr, velExponent );
+          let vx = vCirc * tx + ( Math.random() * 2 - 1 ) * randVel;
+          let vz = vCirc * tz + ( Math.random() * 2 - 1 ) * randVel;
+          let vy = ( Math.random() * 2 - 1 ) * randVel * 0.2;
+
+          // Scale position to target radius
+          x *= rExp;
+          z *= rExp;
+
+          let y;
+          if ( rr < 0.3 ) {
+            y = ( Math.random() - 0.5 ) * height * 2.0;
+            vy *= 3.0;
+          } else {
+            y = ( Math.random() - 0.5 ) * height * 0.2;
+          }
+
+          const mass = Math.random() * maxMass + 1;
+          posArray[ k + 0 ] = x; posArray[ k + 1 ] = y; posArray[ k + 2 ] = z; posArray[ k + 3 ] = 1;
+          velArray[ k + 0 ] = vx; velArray[ k + 1 ] = vy; velArray[ k + 2 ] = vz; velArray[ k + 3 ] = mass;
+        }
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize( window.innerWidth, window.innerHeight );
+        particleUniforms[ 'cameraConstant' ].value = getCameraConstant( camera );
+      }
+
+      function dynamicValuesChanger() {
+        velocityUniforms[ 'gravityConstant' ].value = effectController.gravityConstant;
+        velocityUniforms[ 'density' ].value = effectController.density;
+        velocityUniforms[ 'softening' ].value = effectController.softening;
+        velocityUniforms[ 'damping' ].value = effectController.damping;
+        particleUniforms[ 'density' ].value = effectController.density;
+      }
+
+      function initGUI() {
+        const gui = new GUI( { width: 300 } );
+        const folder1 = gui.addFolder( 'AGN dynamics' );
+        folder1.add( effectController, 'gravityConstant', 100.0, 5000.0, 10.0 ).onChange( dynamicValuesChanger ).name( 'BH mass scale' );
+        folder1.add( effectController, 'density', 0.1, 5.0, 0.01 ).onChange( dynamicValuesChanger ).name( 'Particle density' );
+        folder1.add( effectController, 'softening', 10.0, 400.0, 1.0 ).onChange( dynamicValuesChanger ).name( 'Gravity softening' );
+        folder1.add( effectController, 'damping', 0.95, 1.0, 0.0005 ).onChange( dynamicValuesChanger ).name( 'Velocity damping' );
+
+        const folder2 = gui.addFolder( 'Disk / BLR structure (restart)' );
+        folder2.add( effectController, 'radius', 50.0, 800.0, 1.0 ).name( 'Disk radius' );
+        folder2.add( effectController, 'height', 5.0, 60.0, 0.5 ).name( 'Vertical scale' );
+        folder2.add( effectController, 'exponent', 0.0, 2.0, 0.01 ).name( 'Radial exponent' );
+        folder2.add( effectController, 'maxMass', 1.0, 50.0, 0.1 ).name( 'Max mass' );
+        folder2.add( effectController, 'velocityExponent', 0.0, 1.0, 0.01 ).name( 'Vel exponent' );
+        folder2.add( effectController, 'randVelocity', 0.0, 5.0, 0.1 ).name( 'Turbulence' );
+
+        const buttonRestart = { restartSimulation: () => restartSimulation() };
+        folder2.add( buttonRestart, 'restartSimulation' ).name( 'Restart AGN' );
+
+        folder1.open();
+        folder2.open();
+      }
+
+      function getCameraConstant( camera ) {
+        return window.innerHeight / ( Math.tan( THREE.MathUtils.DEG2RAD * 0.5 * camera.fov ) / camera.zoom );
+      }
+
+      function animate() {
+        render();
+        stats.update();
+      }
+
+      function render() {
+        gpuCompute.compute();
+        particleUniforms[ 'texturePosition' ].value = gpuCompute.getCurrentRenderTarget( positionVariable ).texture;
+        particleUniforms[ 'textureVelocity' ].value = gpuCompute.getCurrentRenderTarget( velocityVariable ).texture;
+        renderer.render( scene, camera );
+      }
+    </script>
+  </body>
+</html>
