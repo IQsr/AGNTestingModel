@@ -2,124 +2,64 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>AGN Galaxy - iPad Hand Control</title>
+    <title>Three.js AGN (Active Galactic Nucleus)</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; }
-        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
-        
-        /* UI Overlay */
-        #ui {
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #info {
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            z-index: 20;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            background: rgba(0,0,0,0.8);
-            color: #00ffcc;
-            font-family: sans-serif;
-            text-align: center;
-            transition: opacity 0.5s;
-        }
-
-        button {
-            background: rgba(0, 255, 204, 0.2);
-            border: 2px solid #00ffcc;
-            color: #00ffcc;
-            padding: 15px 30px;
-            font-size: 1.2rem;
-            border-radius: 30px;
-            cursor: pointer;
-            margin-top: 20px;
-        }
-
-        #statusText { margin-bottom: 20px; font-size: 1.2rem; }
-        
-        /* Hidden video element for processing */
-        #webcam { transform: scaleX(-1); display: none; }
-        
-        /* Hand Cursor */
-        #cursor {
-            position: absolute;
-            width: 30px;
-            height: 30px;
-            border: 3px solid #00ffcc;
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 5;
-            pointer-events: none;
-            display: none;
-            box-shadow: 0 0 15px #00ffcc;
-        }
-
-        #controls-info {
-            position: absolute;
-            bottom: 20px;
+            top: 10px;
             width: 100%;
             text-align: center;
-            color: rgba(255,255,255,0.5);
-            font-family: sans-serif;
-            z-index: 10;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
             pointer-events: none;
-            font-size: 0.9rem;
+            opacity: 0.8;
+            text-shadow: 0 0 5px #000;
+            background: rgba(0,0,0,0.5);
+            padding: 5px 0;
         }
     </style>
 </head>
 <body>
-
-    <!-- START SCREEN (Required for iOS) -->
-    <div id="ui">
-        <h1>AGN Galaxy Simulation</h1>
-        <div id="statusText">Loading AI Model...</div>
-        <button id="startBtn" style="display:none">START CAMERA</button>
-    </div>
-
-    <div id="controls-info">Hand: Move to Rotate | Pinch to Zoom</div>
-
-    <!-- Visual Cursor -->
-    <div id="cursor"></div>
-
-    <!-- Video: Muted and PlaysInline are CRITICAL for iOS -->
-    <video id="webcam" autoplay playsinline muted></video>
+    <div id="info">Active Galactic Nucleus (AGN) Simulation<br>Mouse: Rotate/Zoom</div>
     
-    <div id="canvas-container"></div>
-
-    <!-- Import Three.js -->
     <script type="importmap">
         {
             "imports": {
                 "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/+esm"
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
 
     <script type="module">
         import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
         import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-        import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
-        // --- 1. THREE.JS SCENE SETUP ---
+        // --- SCENE SETUP ---
         const scene = new THREE.Scene();
         scene.fog = new THREE.FogExp2(0x000000, 0.02);
 
         const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const spherical = new THREE.Spherical(14, Math.PI / 2.5, 0); 
-        camera.position.setFromSpherical(spherical);
-        camera.lookAt(0,0,0);
+        camera.position.set(0, 4, 14);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Limit pixel ratio for performance on iPad
+        renderer.setPixelRatio(window.devicePixelRatio);
         renderer.toneMapping = THREE.ReinhardToneMapping;
-        document.getElementById('canvas-container').appendChild(renderer.domElement);
+        document.body.appendChild(renderer.domElement);
 
-        // --- 2. GALAXY CONTENT (Optimized Shaders) ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxDistance = 50;
+        controls.minDistance = 2;
+
+        // --- SHARED SHADER FUNCTIONS (Perlin Noise) ---
         const noiseChunk = `
             vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
             float snoise(vec2 v){
@@ -146,188 +86,212 @@
             }
         `;
 
+        // --- 1. BLACK HOLE & ACCRETION DISK ---
         const blackHoleGroup = new THREE.Group();
         scene.add(blackHoleGroup);
-        const eventHorizon = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 32), new THREE.MeshBasicMaterial({ color: 0x000000 }));
+
+        // A. Event Horizon
+        const eventHorizon = new THREE.Mesh(
+            new THREE.SphereGeometry(1, 64, 64),
+            new THREE.MeshBasicMaterial({ color: 0x000000 })
+        );
         blackHoleGroup.add(eventHorizon);
 
+        // B. Accretion Disk Shader
+        const diskGeo = new THREE.RingGeometry(1.0, 4.5, 64);
         const diskMat = new THREE.ShaderMaterial({
-            vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-            fragmentShader: `
-                uniform float uTime; varying vec2 vUv; ${noiseChunk}
+            vertexShader: `
+                varying vec2 vUv;
                 void main() {
-                    vec2 center = vUv - 0.5; float dist = length(center); float angle = atan(center.y, center.x);
-                    float noiseVal = snoise(vec2(dist * 10.0 - uTime * 4.0, angle * 4.0 + uTime * 0.8));
-                    vec3 color = mix(vec3(0.8, 0.3, 0.0), vec3(0.2, 0.5, 1.0), smoothstep(0.1, 0.4, dist));
-                    color += vec3(1.0) * smoothstep(0.6, 1.0, noiseVal);
-                    float alpha = smoothstep(0.0, 0.15, dist) * smoothstep(0.5, 0.3, dist);
-                    gl_FragColor = vec4(color * 5.0, alpha);
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
                 }
             `,
-            uniforms: { uTime: { value: 0 } }, transparent: true, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false
+            fragmentShader: `
+                uniform float uTime;
+                varying vec2 vUv;
+                ${noiseChunk}
+                void main() {
+                    vec2 center = vUv - 0.5;
+                    float dist = length(center);
+                    float angle = atan(center.y, center.x);
+                    
+                    // High speed, tight swirls for AGN look
+                    float noiseVal = snoise(vec2(dist * 12.0 - uTime * 4.0, angle * 4.0 + uTime * 0.8));
+                    
+                    // AGN Color: Hotter, brighter (White/Blue core -> Orange edge)
+                    vec3 color = mix(vec3(0.8, 0.3, 0.0), vec3(0.2, 0.5, 1.0), smoothstep(0.1, 0.4, dist));
+                    color += vec3(1.0, 1.0, 1.0) * smoothstep(0.6, 1.0, noiseVal); // Hot spots
+
+                    float alpha = smoothstep(0.0, 0.15, dist) * smoothstep(0.5, 0.3, dist);
+                    gl_FragColor = vec4(color * 5.0, alpha); // * 5.0 intensity for bloom
+                }
+            `,
+            uniforms: { uTime: { value: 0 } },
+            transparent: true,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
         });
-        const accretionDisk = new THREE.Mesh(new THREE.RingGeometry(1.0, 4.5, 64), diskMat);
+        const accretionDisk = new THREE.Mesh(diskGeo, diskMat);
         accretionDisk.rotation.x = -Math.PI / 2;
         blackHoleGroup.add(accretionDisk);
 
-        // Jets
-        const jetGeo = new THREE.CylinderGeometry(0.4, 0.05, 20, 32, 1, true);
-        jetGeo.translate(0, 10, 0);
+        // --- 2. AGN JETS (RELATIVISTIC BEAMS) ---
+        
+        // We use a cylinder, but we'll fade it out and add scrolling noise to make it look like energy
+        const jetGeo = new THREE.CylinderGeometry(0.4, 0.05, 20, 32, 10, true);
+        jetGeo.translate(0, 10, 0); // Move base to origin so we can scale/rotate from bottom
+
         const jetMat = new THREE.ShaderMaterial({
-            vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-            fragmentShader: `
-                uniform float uTime; varying vec2 vUv; ${noiseChunk}
+            vertexShader: `
+                varying vec2 vUv;
+                varying vec3 vPos;
                 void main() {
-                    float opacity = (1.0 - smoothstep(0.0, 1.0, vUv.y)) * smoothstep(0.8, 0.0, abs(vUv.x - 0.5) * 2.0);
+                    vUv = uv;
+                    vPos = position;
+                    // Bulge the jet slightly based on height
+                    vec3 pos = position;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform float uTime;
+                varying vec2 vUv;
+                ${noiseChunk}
+                void main() {
+                    // 1. Vertical Fade (strong at bottom, fades at top)
+                    float opacity = 1.0 - smoothstep(0.0, 1.0, vUv.y);
+                    
+                    // 2. Horizontal Pinch (soft edges on the beam)
+                    // vUv.x goes 0->1 around the cylinder. We want 0.5 to be center
+                    float beamWidth = abs(vUv.x - 0.5) * 2.0; 
+                    opacity *= smoothstep(0.8, 0.0, beamWidth); // Fade edges
+
+                    // 3. Energy Noise
+                    // Scroll noise very fast upwards
                     float noise = snoise(vec2(vUv.x * 20.0, vUv.y * 5.0 - uTime * 10.0));
-                    vec3 finalColor = mix(vec3(0.1, 0.0, 0.6), vec3(0.8, 0.9, 1.0), noise + (1.0 - abs(vUv.x - 0.5) * 2.0));
+                    
+                    // 4. Color: High energy Gamma Ray (Violet/Blue/White)
+                    vec3 coreColor = vec3(0.8, 0.9, 1.0); // White-blue core
+                    vec3 outerColor = vec3(0.1, 0.0, 0.6); // Deep violet edge
+                    
+                    vec3 finalColor = mix(outerColor, coreColor, noise + (1.0 - beamWidth));
+
+                    // Boost alpha for bloom
                     gl_FragColor = vec4(finalColor * 4.0, opacity * (0.5 + noise*0.5));
                 }
             `,
-            uniforms: { uTime: { value: 0 } }, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+            uniforms: { uTime: { value: 0 } },
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide
         });
+
+        // Upper Jet
         const jetTop = new THREE.Mesh(jetGeo, jetMat);
         scene.add(jetTop);
+
+        // Lower Jet (Clone and flip)
         const jetBottom = new THREE.Mesh(jetGeo, jetMat.clone());
         jetBottom.rotation.z = Math.PI;
         scene.add(jetBottom);
 
-        // Galaxy Particles
-        const galaxyParams = { count: 30000, radius: 15, branches: 5, spin: 1.5, randomness: 0.35, randomnessPower: 3, insideColor: new THREE.Color('#ffaa66'), outsideColor: new THREE.Color('#1b3984') };
-        const particlesGeo = new THREE.BufferGeometry();
-        const positions = new Float32Array(galaxyParams.count * 3);
-        const colors = new Float32Array(galaxyParams.count * 3);
-        for(let i=0; i<galaxyParams.count; i++) {
-            const i3 = i*3; const r = Math.random()*galaxyParams.radius; const spinAngle = r*galaxyParams.spin; const branchAngle = (i%galaxyParams.branches)/galaxyParams.branches*Math.PI*2;
-            const rndX = Math.pow(Math.random(), galaxyParams.randomnessPower)*(Math.random()<0.5?1:-1)*galaxyParams.randomness*r;
-            const rndY = Math.pow(Math.random(), galaxyParams.randomnessPower)*(Math.random()<0.5?1:-1)*galaxyParams.randomness*r;
-            const rndZ = Math.pow(Math.random(), galaxyParams.randomnessPower)*(Math.random()<0.5?1:-1)*galaxyParams.randomness*r;
-            positions[i3] = Math.cos(branchAngle+spinAngle)*r+rndX; positions[i3+1] = rndY*(r*0.2); positions[i3+2] = Math.sin(branchAngle+spinAngle)*r+rndZ;
-            const mixedColor = galaxyParams.insideColor.clone().lerp(galaxyParams.outsideColor, r/galaxyParams.radius);
-            colors[i3] = mixedColor.r; colors[i3+1] = mixedColor.g; colors[i3+2] = mixedColor.b;
-        }
-        particlesGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        particlesGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        const galaxyPoints = new THREE.Points(particlesGeo, new THREE.PointsMaterial({ size: 0.02, sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending, vertexColors: true }));
-        scene.add(galaxyPoints);
 
-        const composer = new EffectComposer(renderer);
-        composer.addPass(new RenderPass(scene, camera));
-        composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 2.5, 0.6, 0.1));
-
-        // --- 3. HAND TRACKING LOGIC (iOS FIXES) ---
-
-        const video = document.getElementById('webcam');
-        const startBtn = document.getElementById('startBtn');
-        const ui = document.getElementById('ui');
-        const statusText = document.getElementById('statusText');
-        const cursor = document.getElementById('cursor');
+        // --- 3. THE GALAXY ---
         
-        let handLandmarker = undefined;
-        let lastVideoTime = -1;
-        let targetTheta = spherical.theta;
-        let targetPhi = spherical.phi;
-        let targetRadius = spherical.radius;
-
-        // Initialize MediaPipe
-        const createHandLandmarker = async () => {
-            try {
-                const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
-                handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                    baseOptions: {
-                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                        delegate: "GPU"
-                    },
-                    runningMode: "VIDEO",
-                    numHands: 1
-                });
-                
-                statusText.innerText = "AI Ready.";
-                startBtn.style.display = "block";
-                
-            } catch (err) {
-                statusText.innerText = "Error loading AI: " + err.message;
-            }
+        const galaxyParameters = {
+            count: 60000,
+            size: 0.02,
+            radius: 15,
+            branches: 5,
+            spin: 1.5,
+            randomness: 0.35,
+            randomnessPower: 3,
+            insideColor: new THREE.Color('#ffaa66'), // Hotter center
+            outsideColor: new THREE.Color('#1b3984')
         };
 
-        // Start Camera Logic (Must be triggered by user action on iOS)
-        startBtn.addEventListener('click', () => {
-            statusText.innerText = "Requesting Camera...";
-            
-            // iPad/iOS Constraints
-            const constraints = {
-                video: {
-                    facingMode: "user", // Front camera
-                    width: { ideal: 640 }, // Relaxed constraint
-                    height: { ideal: 480 } // Relaxed constraint
-                }
-            };
+        let galaxyPoints = null;
 
-            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
-                video.srcObject = stream;
-                video.addEventListener("loadeddata", () => {
-                    // Hide UI and start
-                    ui.style.opacity = 0;
-                    setTimeout(() => ui.style.display = 'none', 500);
-                });
-            }).catch((err) => {
-                statusText.innerText = "Camera Denied: " + err.message;
-                alert("Please check Settings > Chrome > Camera and allow access.");
+        const generateGalaxy = () => {
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(galaxyParameters.count * 3);
+            const colors = new Float32Array(galaxyParameters.count * 3);
+
+            for(let i = 0; i < galaxyParameters.count; i++) {
+                const i3 = i * 3;
+                const r = Math.random() * galaxyParameters.radius;
+                const spinAngle = r * galaxyParameters.spin;
+                const branchAngle = (i % galaxyParameters.branches) / galaxyParameters.branches * Math.PI * 2;
+
+                const randomX = Math.pow(Math.random(), galaxyParameters.randomnessPower) * (Math.random() < 0.5 ? 1 : -1) * galaxyParameters.randomness * r;
+                const randomY = Math.pow(Math.random(), galaxyParameters.randomnessPower) * (Math.random() < 0.5 ? 1 : -1) * galaxyParameters.randomness * r;
+                const randomZ = Math.pow(Math.random(), galaxyParameters.randomnessPower) * (Math.random() < 0.5 ? 1 : -1) * galaxyParameters.randomness * r;
+
+                positions[i3] = Math.cos(branchAngle + spinAngle) * r + randomX;
+                positions[i3 + 1] = randomY * (r * 0.2); // Thicker core for AGN
+                positions[i3 + 2] = Math.sin(branchAngle + spinAngle) * r + randomZ;
+
+                const mixedColor = galaxyParameters.insideColor.clone();
+                mixedColor.lerp(galaxyParameters.outsideColor, r / galaxyParameters.radius);
+
+                colors[i3] = mixedColor.r;
+                colors[i3 + 1] = mixedColor.g;
+                colors[i3 + 2] = mixedColor.b;
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: galaxyParameters.size,
+                sizeAttenuation: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+                vertexColors: true
             });
-        });
 
-        createHandLandmarker();
+            galaxyPoints = new THREE.Points(geometry, material);
+            scene.add(galaxyPoints);
+        };
 
-        // --- 4. ANIMATION ---
+        generateGalaxy();
+
+        // --- 4. POST PROCESSING (INTENSE BLOOM) ---
+        
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            2.5, // High Strength for AGN
+            0.6, // Radius
+            0.1  // Threshold
+        );
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- ANIMATION ---
+
         const clock = new THREE.Clock();
 
         const animate = () => {
             const elapsedTime = clock.getElapsedTime();
 
+            // Rotate Galaxy
             if(galaxyPoints) galaxyPoints.rotation.y = elapsedTime * 0.03;
+
+            // Animate Accretion Disk
             diskMat.uniforms.uTime.value = elapsedTime;
             accretionDisk.rotation.z = elapsedTime * 0.4;
+
+            // Animate Jets (High speed flow)
             jetMat.uniforms.uTime.value = elapsedTime;
             jetBottom.material.uniforms.uTime.value = elapsedTime;
 
-            // Hand Detection
-            if (handLandmarker && video.srcObject && video.readyState >= 2) {
-                if (video.currentTime !== lastVideoTime) {
-                    lastVideoTime = video.currentTime;
-                    const detections = handLandmarker.detectForVideo(video, performance.now());
-
-                    if (detections.landmarks.length > 0) {
-                        const landmarks = detections.landmarks[0];
-                        const x = landmarks[9].x; 
-                        const y = landmarks[9].y;
-
-                        cursor.style.display = "block";
-                        cursor.style.left = (1 - x) * 100 + "%";
-                        cursor.style.top = y * 100 + "%";
-
-                        const sensitivity = 0.05;
-                        targetTheta += (x - 0.5) * sensitivity; 
-                        targetPhi = y * Math.PI;
-                        targetPhi = Math.max(0.1, Math.min(Math.PI - 0.1, targetPhi));
-
-                        // Zoom
-                        const thumb = landmarks[4];
-                        const index = landmarks[8];
-                        const pinchDist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
-                        targetRadius = THREE.MathUtils.mapLinear(pinchDist, 0.02, 0.2, 5, 40);
-                    } else {
-                        cursor.style.display = "none";
-                    }
-                }
-            }
-
-            spherical.theta += (targetTheta - spherical.theta) * 0.05;
-            spherical.phi += (targetPhi - spherical.phi) * 0.05;
-            spherical.radius += (targetRadius - spherical.radius) * 0.05;
-            spherical.makeSafe();
-            camera.position.setFromSpherical(spherical);
-            camera.lookAt(0,0,0);
-
+            controls.update();
             composer.render();
             requestAnimationFrame(animate);
         };
