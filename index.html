@@ -2,28 +2,110 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Three.js AGN: High Density & Vertical Volume</title>
+    <title>Three.js AGN: Seyfert Classification</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
         canvas { display: block; }
+        
+        /* Top Info */
         #info {
             position: absolute;
             top: 10px;
             width: 100%;
             text-align: center;
             color: #aaa;
-            font-family: 'Courier New', Courier, monospace;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             pointer-events: none;
-            background: rgba(0,0,0,0.0);
-            padding: 5px 0;
+            z-index: 10;
             font-size: 14px;
             font-weight: bold;
-            text-shadow: 0 0 10px #000;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 5px #000;
+        }
+
+        /* CLASSIFICATION HUD (New Feature) */
+        #hud {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            pointer-events: none;
+            z-index: 20;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        #hud-box {
+            display: inline-block;
+            background: rgba(0, 10, 30, 0.85);
+            border: 1px solid #4488ff;
+            padding: 15px 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0, 100, 255, 0.2);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+        #type-title {
+            color: #88ccff;
+            font-size: 12px;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+
+        #type-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff;
+            text-shadow: 0 0 10px currentColor;
+        }
+
+        #type-desc {
+            color: #aaa;
+            font-size: 12px;
+            margin-top: 5px;
+        }
+
+        /* 3D Object Labels */
+        .label {
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 12px;
+            font-weight: bold;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 4px 8px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            pointer-events: none; 
+            user-select: none;
+            text-shadow: 0 0 2px #000;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            white-space: nowrap;
+        }
+        .label::before {
+            content: '';
+            position: absolute;
+            bottom: -4px; 
+            left: 50%;
+            transform: translateX(-50%);
+            width: 6px;
+            height: 6px;
+            background-color: #fff;
+            border-radius: 50%;
+            box-shadow: 0 0 5px #fff;
         }
     </style>
 </head>
 <body>
-    <div id="info">AGN | High Density Particles</div>
+    <div id="info">Unified AGN Model | Rotate Camera to Change Classification</div>
+    
+    <!-- HUD for Seyfert Type -->
+    <div id="hud">
+        <div id="hud-box">
+            <div id="type-title">Current Observation Angle</div>
+            <div id="type-value">DETECTING...</div>
+            <div id="type-desc">Analyzing Line of Sight...</div>
+        </div>
+    </div>
     
     <script type="importmap">
         {
@@ -40,25 +122,40 @@
         import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
         import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+        // --- DOM ELEMENTS ---
+        const hudBox = document.getElementById('hud-box');
+        const typeValue = document.getElementById('type-value');
+        const typeDesc = document.getElementById('type-desc');
 
         // --- SCENE ---
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x000000, 0.01); // Slightly less fog to see density better
+        scene.fog = new THREE.FogExp2(0x000000, 0.01);
 
         const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 10, 20); // Moved back to see the scale
+        camera.position.set(0, 15, 30); // Start at a slight angle
 
+        // 1. WebGL Renderer
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.toneMapping = THREE.ReinhardToneMapping;
         document.body.appendChild(renderer.domElement);
 
+        // 2. CSS2D Renderer
+        const labelRenderer = new CSS2DRenderer();
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.domElement.style.position = 'absolute';
+        labelRenderer.domElement.style.top = '0px';
+        labelRenderer.domElement.style.pointerEvents = 'none'; 
+        document.body.appendChild(labelRenderer.domElement);
+
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
-        controls.minDistance = 3;
-        controls.maxDistance = 80;
+        controls.minDistance = 5;
+        controls.maxDistance = 100;
 
         // --- NOISE ---
         const noiseChunk = `
@@ -101,10 +198,7 @@
         const diskMat = new THREE.ShaderMaterial({
             vertexShader: `
                 varying vec2 vUv;
-                void main() {
-                    vUv = uv;
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-                }
+                void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
             `,
             fragmentShader: `
                 uniform float uTime;
@@ -114,18 +208,13 @@
                     vec2 center = vUv - 0.5;
                     float dist = length(center);
                     float angle = atan(center.y, center.x);
-                    
                     float noiseVal = snoise(vec2(dist * 10.0 - uTime * 2.0, angle * 5.0 + uTime));
-                    
                     vec3 hotColor = vec3(0.3, 0.6, 1.0); 
                     vec3 coolColor = vec3(1.0, 0.2, 0.0);
-                    
                     float tempGradient = smoothstep(0.15, 0.45, dist);
                     vec3 finalColor = mix(hotColor, coolColor, tempGradient);
-                    
                     finalColor += vec3(0.5) * smoothstep(0.5, 1.0, noiseVal);
                     float alpha = smoothstep(0.0, 0.05, dist) * smoothstep(0.5, 0.4, dist);
-                    
                     gl_FragColor = vec4(finalColor * 2.0, alpha); 
                 }
             `,
@@ -139,17 +228,13 @@
         accretionDisk.rotation.x = -Math.PI / 2;
         blackHoleGroup.add(accretionDisk);
 
-        // --- 2. JETS (Thicker) ---
+        // --- 2. JETS ---
         const jetGeo = new THREE.CylinderGeometry(0.35, 0.05, 30, 32, 10, true);
         jetGeo.translate(0, 15, 0);
-
         const jetMat = new THREE.ShaderMaterial({
             vertexShader: `
                 varying vec2 vUv;
-                void main() {
-                    vUv = uv;
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-                }
+                void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
             `,
             fragmentShader: `
                 uniform float uTime;
@@ -159,7 +244,6 @@
                     float opacity = pow(1.0 - vUv.y, 3.0);
                     float beamWidth = abs(vUv.x - 0.5) * 2.0;
                     opacity *= smoothstep(0.5, 0.0, beamWidth); 
-
                     float noise = snoise(vec2(vUv.x * 8.0, vUv.y * 3.0 - uTime * 10.0));
                     vec3 color = vec3(0.4, 0.6, 1.0);
                     gl_FragColor = vec4(color * 2.5, opacity * (0.4 + noise * 0.5));
@@ -177,71 +261,46 @@
         jetBottom.rotation.z = Math.PI;
         scene.add(jetBottom);
 
-        // --- 3. DUSTY TORUS (HIGH DENSITY & HEIGHT) ---
-        
+        // --- 3. DUSTY TORUS ---
         const torusParams = {
-            count: 100000,   // INCREASED from 25k to 100k
+            count: 100000,
             radiusMain: 8,
-            radiusTube: 4,   // INCREASED Thickness
-            verticalScale: 1.4, // NEW: Stretches the torus vertically
+            radiusTube: 4,
+            verticalScale: 1.4,
             colorInner: new THREE.Color('#ff6600'),
             colorOuter: new THREE.Color('#220500')
         };
-
         let torusPoints = null;
-
         const generateDustTorus = () => {
             const geo = new THREE.BufferGeometry();
             const positions = new Float32Array(torusParams.count * 3);
             const colors = new Float32Array(torusParams.count * 3);
-
             for(let i = 0; i < torusParams.count; i++) {
                 const i3 = i * 3;
-                
                 const u = Math.random() * Math.PI * 2; 
                 const v = Math.random() * Math.PI * 2; 
                 const rOffset = Math.random() * torusParams.radiusTube;
-
                 const centerX = (torusParams.radiusMain + rOffset * Math.cos(v)) * Math.cos(u);
-                // INCREASED HEIGHT: Multiplied by verticalScale
                 const centerY = (rOffset * Math.sin(v)) * torusParams.verticalScale; 
                 const centerZ = (torusParams.radiusMain + rOffset * Math.cos(v)) * Math.sin(u);
-
-                // Add random fuzziness
-                positions[i3]     = centerX + (Math.random()-0.5) * 0.5;
+                positions[i3] = centerX + (Math.random()-0.5) * 0.5;
                 positions[i3 + 1] = centerY + (Math.random()-0.5) * 0.5;
                 positions[i3 + 2] = centerZ + (Math.random()-0.5) * 0.5;
-
                 const mixedColor = torusParams.colorInner.clone();
                 mixedColor.lerp(torusParams.colorOuter, Math.random());
-                
-                colors[i3]     = mixedColor.r;
-                colors[i3 + 1] = mixedColor.g;
-                colors[i3 + 2] = mixedColor.b;
+                colors[i3] = mixedColor.r; colors[i3 + 1] = mixedColor.g; colors[i3 + 2] = mixedColor.b;
             }
-
             geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
             geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-            const mat = new THREE.PointsMaterial({
-                size: 0.06, 
-                sizeAttenuation: true,
-                depthWrite: false,
-                blending: THREE.AdditiveBlending,
-                vertexColors: true,
-                opacity: 0.5, // Slightly lower opacity per particle, but higher density
-                transparent: true
-            });
-
+            const mat = new THREE.PointsMaterial({ size: 0.06, sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending, vertexColors: true, opacity: 0.5, transparent: true });
             torusPoints = new THREE.Points(geo, mat);
             scene.add(torusPoints);
         };
-
         generateDustTorus();
 
-        // --- 4. GALAXY SPIRAL (Thicker) ---
+        // --- 4. GALAXY SPIRAL ---
         const galaxyParams = {
-            count: 80000, // INCREASED from 60k to 80k
+            count: 80000,
             radius: 30,
             branches: 3,
             spin: 1.2,
@@ -250,50 +309,30 @@
             insideColor: new THREE.Color('#6688ff'), 
             outsideColor: new THREE.Color('#ff4422') 
         };
-
         let galaxyPoints = null;
-
         const generateGalaxy = () => {
             const geo = new THREE.BufferGeometry();
             const positions = new Float32Array(galaxyParams.count * 3);
             const colors = new Float32Array(galaxyParams.count * 3);
-
             for(let i = 0; i < galaxyParams.count; i++) {
                 const i3 = i * 3;
                 const r = 10 + Math.random() * (galaxyParams.radius - 10);
-                
                 const spinAngle = r * galaxyParams.spin;
                 const branchAngle = (i % galaxyParams.branches) / galaxyParams.branches * Math.PI * 2;
-
                 const rndX = Math.pow(Math.random(), galaxyParams.randomnessPower) * (Math.random()<0.5?1:-1) * galaxyParams.randomness * r;
                 const rndY = Math.pow(Math.random(), galaxyParams.randomnessPower) * (Math.random()<0.5?1:-1) * galaxyParams.randomness * r;
                 const rndZ = Math.pow(Math.random(), galaxyParams.randomnessPower) * (Math.random()<0.5?1:-1) * galaxyParams.randomness * r;
-
                 positions[i3] = Math.cos(branchAngle + spinAngle) * r + rndX;
-                // INCREASED THICKNESS: r * 0.2 (was 0.05)
                 positions[i3+1] = rndY * (r * 0.2); 
                 positions[i3+2] = Math.sin(branchAngle + spinAngle) * r + rndZ;
-
                 const colorIn = galaxyParams.insideColor.clone();
                 const colorOut = galaxyParams.outsideColor.clone();
                 const mixedColor = colorIn.lerp(colorOut, (r-10) / (galaxyParams.radius-10));
-
-                colors[i3] = mixedColor.r;
-                colors[i3+1] = mixedColor.g;
-                colors[i3+2] = mixedColor.b;
+                colors[i3] = mixedColor.r; colors[i3+1] = mixedColor.g; colors[i3+2] = mixedColor.b;
             }
-
             geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
             geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-            const mat = new THREE.PointsMaterial({
-                size: 0.03, // Slightly larger stars
-                sizeAttenuation: true,
-                depthWrite: false,
-                blending: THREE.AdditiveBlending,
-                vertexColors: true
-            });
-
+            const mat = new THREE.PointsMaterial({ size: 0.03, sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending, vertexColors: true });
             galaxyPoints = new THREE.Points(geo, mat);
             scene.add(galaxyPoints);
         };
@@ -301,16 +340,57 @@
 
         // --- 5. BLOOM ---
         const renderPass = new RenderPass(scene, camera);
-        const bloomPass = new UnrealBloomPass(
-            new THREE.Vector2(window.innerWidth, window.innerHeight),
-            1.2, 
-            0.4, 
-            0.05 
-        );
-
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.4, 0.05);
         const composer = new EffectComposer(renderer);
         composer.addPass(renderPass);
         composer.addPass(bloomPass);
+
+        // --- 6. LABELS ---
+        function createLabel(text, x, y, z) {
+            const div = document.createElement('div');
+            div.className = 'label';
+            div.textContent = text;
+            const label = new CSS2DObject(div);
+            label.position.set(x, y, z);
+            scene.add(label);
+            return label;
+        }
+
+        createLabel("Event Horizon", 0, 0, 0); 
+        createLabel("Accretion Disk (X-Ray to Optical)", 3.8, 0.5, 0); 
+        createLabel("Relativistic Jet (Gamma)", 0, 18, 0); 
+        createLabel("Dusty Torus (Infrared)", 9, 5, 0); 
+        createLabel("Galaxy Arms (Optical)", 22, 0, 0); 
+
+
+        // --- LOGIC: UPDATE SEYFERT TYPE ---
+        function updateSeyfertStatus() {
+            // Get Polar Angle (0 is North Pole/Top, PI is South Pole/Bottom, PI/2 is Equator/Side)
+            const angle = controls.getPolarAngle();
+            
+            // Define a "Blockage Zone" near the equator where the Torus obscures the view.
+            // PI/2 is approx 1.57.
+            // Let's assume the Torus blocks view between 70deg (1.22 rad) and 110deg (1.92 rad).
+            
+            const lowerBound = 1.25;
+            const upperBound = 1.89;
+
+            if (angle > lowerBound && angle < upperBound) {
+                // SEYFERT 2 (Side View / Obscured)
+                typeValue.textContent = "SEYFERT 2";
+                typeValue.style.color = "#ff4444"; // Red for blocked
+                typeDesc.textContent = "Line of Sight Obscured by Torus";
+                hudBox.style.borderColor = "#ff4444";
+                hudBox.style.boxShadow = "0 0 20px rgba(255, 68, 68, 0.3)";
+            } else {
+                // SEYFERT 1 (Top View / Unobscured)
+                typeValue.textContent = "SEYFERT 1";
+                typeValue.style.color = "#44ff44"; // Green for visible
+                typeDesc.textContent = "Direct View of Accretion Disk & BLR";
+                hudBox.style.borderColor = "#44ff44";
+                hudBox.style.boxShadow = "0 0 20px rgba(68, 255, 68, 0.3)";
+            }
+        }
 
         // --- LOOP ---
         const clock = new THREE.Clock();
@@ -323,12 +403,14 @@
 
             diskMat.uniforms.uTime.value = elapsed;
             accretionDisk.rotation.z = elapsed * 0.4;
-
             jetMat.uniforms.uTime.value = elapsed;
             jetBottom.material.uniforms.uTime.value = elapsed;
 
             controls.update();
+            updateSeyfertStatus(); // Check angle every frame
+            
             composer.render();
+            labelRenderer.render(scene, camera);
             requestAnimationFrame(animate);
         };
 
@@ -339,6 +421,7 @@
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
             composer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
         });
     </script>
 </body>
